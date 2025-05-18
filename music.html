@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Music Player</title>
+    <link rel="manifest" href="app.webmanifest">
+    <style>
+    h1{
+      color: green ;
+   padding: 40px 300px;
+   border: none;
+   border-radius: 30px;
+   background: linear-gradient(45deg, var(--primary), var(--secondary));
+   color: white;
+    }
+        :root {
+            --primary: #ff6b6b;
+            --secondary: #4ecdc4;
+            --background: #2d3436;
+        }
+
+        body {
+            background: var(--background);
+            color: white;
+            font-family: 'Arial', sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            transition: background 1s ease;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .visualizer {
+            height: 150px;
+            position: relative;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+
+        .visualizer-bar {
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(to top, var(--primary), var(--secondary));
+            position: absolute;
+            bottom: 0;
+            transform-origin: bottom;
+            animation: visualizer 0.8s infinite alternate;
+        }
+
+        @keyframes visualizer {
+            0% { transform: scaleY(0.3); }
+            100% { transform: scaleY(1); }
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        button {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 30px;
+            background: linear-gradient(45deg, var(--primary), var(--secondary));
+            color: white;
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        .track-list {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+        }
+
+        .track-item {
+            padding: 15px;
+            margin: 10px 0;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .track-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateX(10px);
+        }
+
+        .track-item.playing {
+            border-left: 5px solid var(--primary);
+        }
+
+        input[type="range"] {
+            width: 200px;
+            height: 5px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 5px;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 15px;
+            height: 15px;
+            background: var(--primary);
+            border-radius: 50%;
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 10px;
+            }
+            
+            button {
+                padding: 10px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="visualizer" id="visualizer"></div>
+        
+        <div class="controls">
+            <button id="prevBtn">⏮</button>
+            <button id="playPauseBtn">▶</button>
+            <button id="nextBtn">⏭</button>
+        </div>
+
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1">
+        
+        <div class="track-list" id="trackList"></div>
+        <input type="file" id="fileInput" accept="audio/*" multiple hidden>
+        <button onclick="document.getElementById('fileInput').click()">Add Music</button>
+    </div>
+
+    <script>
+        class MusicPlayer {
+            constructor() {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                this.analyser = this.audioContext.createAnalyser();
+                this.gainNode = this.audioContext.createGain();
+                this.tracks = [];
+                this.currentTrackIndex = -1;
+                this.isPlaying = false;
+                this.visualizerBars = [];
+                
+                this.init();
+                this.initServiceWorker();
+            }
+
+            async init() {
+                this.initDOM();
+                this.initEventListeners();
+                this.createVisualizer();
+                await this.loadStoredTracks();
+            }
+
+            initDOM() {
+                this.visualizer = document.getElementById('visualizer');
+                this.trackList = document.getElementById('trackList');
+                this.playPauseBtn = document.getElementById('playPauseBtn');
+                this.volumeSlider = document.getElementById('volumeSlider');
+            }
+
+            initEventListeners() {
+                document.getElementById('fileInput').addEventListener('change', async (e) => {
+                    await this.handleFiles(e.target.files);
+                });
+
+                document.getElementById('prevBtn').addEventListener('click', () => this.prevTrack());
+                document.getElementById('nextBtn').addEventListener('click', () => this.nextTrack());
+                this.playPauseBtn.addEventListener('click', () => this.togglePlay());
+                this.volumeSlider.addEventListener('input', (e) => {
+                    this.gainNode.gain.setValueAtTime(e.target.value, this.audioContext.currentTime);
+                });
+            }
+
+            async handleFiles(files) {
+                for (const file of files) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
+                    
+                    const track = {
+                        name: file.name.replace(/\.[^/.]+$/, ""),
+                        audioBuffer,
+                        source: null,
+                        duration: this.formatTime(audioBuffer.duration)
+                    };
+
+                    this.tracks.push(track);
+                    this.saveTrack(track);
+                    this.createTrackElement(track);
+                }
+            }
+
+            createTrackElement(track) {
+                const trackElement = document.createElement('div');
+                trackElement.className = 'track-item';
+                trackElement.innerHTML = `
+                    <h3>${track.name}</h3>
+                    <p>${track.duration}</p>
+                `;
+                trackElement.addEventListener('click', () => this.playTrack(this.tracks.indexOf(track)));
+                this.trackList.appendChild(trackElement);
+            }
+
+            async playTrack(index) {
+                if (index < 0 || index >= this.tracks.length) return;
+
+                if (this.currentTrackIndex !== -1) {
+                    this.stopTrack();
+                }
+
+                this.currentTrackIndex = index;
+                const track = this.tracks[index];
+                
+                track.source = this.audioContext.createBufferSource();
+                track.source.buffer = track.audioBuffer;
+                
+                track.source.connect(this.analyser);
+                this.analyser.connect(this.gainNode);
+                this.gainNode.connect(this.audioContext.destination);
+                
+                track.source.start(0);
+                this.isPlaying = true;
+                this.playPauseBtn.textContent = '⏸';
+                this.updateUI();
+                this.startVisualizer();
+            }
+
+            updateUI() {
+                document.querySelectorAll('.track-item').forEach((item, index) => {
+                    item.classList.toggle('playing', index === this.currentTrackIndex);
+                });
+            }
+
+            togglePlay() {
+                if (!this.tracks.length) return;
+
+                if (this.isPlaying) {
+                    this.audioContext.suspend();
+                    this.playPauseBtn.textContent = '▶';
+                } else {
+                    this.audioContext.resume();
+                    this.playPauseBtn.textContent = '⏸';
+                }
+                this.isPlaying = !this.isPlaying;
+            }
+
+            nextTrack() {
+                const newIndex = (this.currentTrackIndex + 1) % this.tracks.length;
+                this.playTrack(newIndex);
+            }
+
+            prevTrack() {
+                const newIndex = (this.currentTrackIndex - 1 + this.tracks.length) % this.tracks.length;
+                this.playTrack(newIndex);
+            }
+
+            createVisualizer() {
+                for (let i = 0; i < 50; i++) {
+                    const bar = document.createElement('div');
+                    bar.className = 'visualizer-bar';
+                    bar.style.left = `${i * 16}px`;
+                    this.visualizerBars.push(bar);
+                    this.visualizer.appendChild(bar);
+                }
+            }
+
+            startVisualizer() {
+                const bufferLength = this.analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+
+                const animate = () => {
+                    if (!this.isPlaying) return;
+
+                    this.analyser.getByteFrequencyData(dataArray);
+                    
+                    this.visualizerBars.forEach((bar, i) => {
+                        const height = dataArray[i % bufferLength] / 2;
+                        bar.style.height = `${height}%`;
+                        bar.style.background = `linear-gradient(to top, 
+                            hsl(${height * 2}, 100%, 50%), 
+                            hsl(${height * 4}, 100%, 50%))`;
+                    });
+
+                    document.body.style.background = `hsl(${dataArray[10] * 2}, 50%, 15%)`;
+                    requestAnimationFrame(animate);
+                };
+
+                animate();
+            }
+
+            async initServiceWorker() {
+                if ('serviceWorker' in navigator) {
+                    try {
+                        await navigator.serviceWorker.register('sw.js');
+                    } catch (error) {
+                        console.log('Service Worker registration failed:', error);
+                    }
+                }
+            }
+
+            async saveTrack(track) {
+                // Implement IndexedDB storage here
+            }
+
+            async loadStoredTracks() {
+                // Load tracks from IndexedDB
+            }
+
+            formatTime(seconds) {
+                const minutes = Math.floor(seconds / 60);
+                seconds = Math.floor(seconds % 60);
+                return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            }
+        }
+
+        // Initialize the music player
+        const musicPlayer = new MusicPlayer();
+          
+    </script>
+    <marquee behavior="scroll" direction="right"><h1>if you have <br> no 🎧 <br>new features <br> are coming</h1></marquee>
+</body>
+</html>
